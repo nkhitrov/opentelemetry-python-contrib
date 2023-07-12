@@ -333,3 +333,43 @@ class TestCustomHeaders(AsgiTestBase, TestBase):
             if span.kind == SpanKind.SERVER:
                 for key, _ in not_expected.items():
                     self.assertNotIn(key, span.attributes)
+
+
+
+@mock.patch.dict(
+    "os.environ",
+    {
+        OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST: "custom-test-.*",
+    },
+)
+class TestHeadersDecoding(AsgiTestBase, TestBase):
+    def setUp(self):
+        super().setUp()
+        self.tracer_provider, self.exporter = TestBase.create_tracer_provider()
+        self.tracer = self.tracer_provider.get_tracer(__name__)
+        self.app = otel_asgi.OpenTelemetryMiddleware(
+            simple_asgi, tracer_provider=self.tracer_provider
+        )
+
+    def test_http_custom_request_headers_with_special_characters(self):
+        self.scope["headers"].extend(
+            [
+                (b"custom-test-header-1", b"test-header-value-1"),
+                (b"custom-test-\xb2-header", b"Hello \xe9 World"),
+            ]
+        )
+        self.seed_app(self.app)
+        self.send_default_request()
+        self.get_all_output()
+        span_list = self.exporter.get_finished_spans()
+        expected = {
+            "http.request.header.custom_test_header_1": (
+                "test-header-value-1",
+            ),
+            "http.request.header.custom_test_²_header": (
+                "Hello é World",
+            ),
+        }
+        for span in span_list:
+            if span.kind == SpanKind.SERVER:
+                self.assertSpanHasAttributes(span, expected)
